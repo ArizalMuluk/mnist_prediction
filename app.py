@@ -1,123 +1,101 @@
-from flask import Flask, render_template, redirect, url_for, request
+from flask import Flask, request, jsonify, render_template
 import torch as tc
-import torch.nn as nn 
-import torchvision.transforms as transforms
+import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
+from torchvision.transforms import ToTensor, Grayscale, Resize
 import io
-import os
 import base64
 
-from SimpleFNN import SimpleFNN
+# Definisikan ulang kelas model CNN Anda
+# Ini penting saat memuat state_dict, struktur model harus ada
+class CNN(nn.Module):
+  def __init__(self):
+    super(CNN, self).__init__()
+
+    self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
+    self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
+    self.conv2_drop = nn.Dropout2d()
+    self.fc1 = nn.Linear(320, 50)
+    self.fc2 = nn.Linear(50, 10)
+
+  def forward(self, x):
+    x = F.relu(F.max_pool2d(self.conv1(x), 2))
+    x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
+    x = x.view(-1, 320)
+    x = F.relu(self.fc1(x))
+    x = F.dropout(x, training=self.training)
+    x = self.fc2(x)
+
+    return F.softmax(x)
 
 app = Flask(__name__)
 
-MODEL = 'mnist.pth'
-
-INPUT_SIZE = 28*28
-HIDDEN_SIZE = 128
-NUM_CLASSES = 10
-
-device = tc.device("cuda" if tc.cuda.is_available() else "cpu")
-print(f"Using Device : {device}")
+# Muat model saat aplikasi Flask dimulai
+device = tc.device('cuda' if tc.cuda.is_available() else 'cpu')
+model = CNN().to(device)
+model_save_path = './output/cnn_mnist.pt'
 
 try:
-    model = SimpleFNN()
-    model.load_state_dict(tc.load(MODEL, map_location=device))
-    model.eval()
-    
+    model.load_state_dict(tc.load(model_save_path, map_location=device))
+    model.eval() # Set model ke mode evaluasi
+    print("Model berhasil dimuat.")
 except FileNotFoundError:
-    print(f"[ERROR] : Model file '{MODEL}' not found.")
-    print("[INFO] : Please check the model path.")
-    model = None
-
+    print(f"Error: File model '{model_save_path}' tidak ditemukan. Pastikan model sudah disimpan di lokasi yang benar.")
+    # Anda mungkin ingin menangani ini dengan lebih baik di aplikasi produksi
 except Exception as e:
-    print(f"[ERROR] : Error while loading the model : {e}")
-    print("[INFO] : Please check the model file.")
-    model = None
-    
-def preprocess_image(image_bytes):
-    try:
-        img = Image.open(io.BytesIO(image_bytes)).convert('L')
-
-        transform = transforms.Compose([
-            transforms.Resize((28 , 28)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307), (0.3081))
-        ])
-
-        img_tensor = transform(img)
-
-        # img_tensor = img_tensor.view(1, 1, 28, 28)
-        img_tensor = img_tensor.unsqueeze(0)
-
-        return img_tensor
-    except Exception as e:
-        print(f"[ERROR] : Error while preprocessing the image : {e}")
-        return None
-    
-def predict_digit(image_tensor, model):
-    if image_tensor is None or model is None:
-        return -1, 0.0
-    
-    try:
-        model.eval()
-        with tc.no_grad():
-            outputs = model(image_tensor)
-            print(f"[DEBUG] Raw model outputs (logits): {outputs}")
-            
-            probabilities = F.softmax(outputs, dim=1)
-            print(f"[DEBUG] Probabilities for each class: {probabilities.cpu().numpy().tolist()}")
-            
-            _, predicted = tc.max(outputs.data, 1)
-            
-            confidence = probabilities[0][predicted.item()].item()
-            
-        # Return the predicted digit, its confidence, and the full probability distribution for debugging
-        return predicted.item(), confidence, probabilities.cpu().numpy().flatten().tolist()
-    
-    except Exception as e:
-        print(f"[ERROR] : Error while predicting the digit : {e}")
-        return -1, 0.0, []
+    print(f"Error saat memuat model: {e}")
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
+# Endpoint untuk prediksi
 @app.route('/predict', methods=['POST'])
 def predict():
-    if model is None:
-        return redirect(url_for('index'))
-    
     if 'file' not in request.files:
-        return redirect(url_for('index'))
-    
-    file =request.files['file']
-    
+        return render_template('index.html', error="Tidak ada file gambar di request")
+
+    file = request.files['file']
+
     if file.filename == '':
-        return redirect(url_for('index'))
-    
+        return render_template('index.html', error="Tidak ada file gambar yang dipilih")
+
     if file:
-        image_bytes = file.read()
-        mime_type = file.mimetype
-        
-        img_base64 = base64.b64encode(image_bytes).decode('utf-8')
-        image_data_url = f"data:{mime_type};base64,{img_base64}"
-        
-        processed_image_tensor = preprocess_image(image_bytes)
-        
-        if processed_image_tensor is not None:
-            predicted_digit, confidence, all_probabilities = predict_digit(processed_image_tensor, model) # Modified to get all_probabilities
-            
-            if predicted_digit != -1:
-                return render_template('index.html', predicted_digit=predicted_digit, confidence=confidence, image_data_url=image_data_url, all_probabilities=all_probabilities)
-            else:
-                return render_template('index.html', error="Error during prediction.", image_data_url=image_data_url, all_probabilities=all_probabilities if 'all_probabilities' in locals() else [])
-        else:
-            return render_template('index.html', error="Error in image preprocessing.", image_data_url=image_data_url)
-        
-    return redirect(url_for('index'))
+        try:
+            # Baca gambar dari stream file
+            img_bytes = file.read()
+            img = Image.open(io.BytesIO(img_bytes))
+
+            # Preprocessing gambar agar sesuai dengan input model MNIST (grayscale, ukuran 28x28)
+            transform = ToTensor()
+            img_for_model = img.convert('L').resize((28, 28), Image.Resampling.LANCZOS)
+            img_tensor = transform(img_for_model).unsqueeze(0).to(device)
+
+            # Lakukan inferensi
+            with tc.no_grad():
+                output = model(img_tensor)
+            prediction = output.argmax(dim=1, keepdim=True).item()
+
+            # Konversi gambar asli ke base64 untuk ditampilkan
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            img_b64 = base64.b64encode(buffered.getvalue()).decode()
+            image_data_url = f"data:image/png;base64,{img_b64}"
+
+            return render_template(
+                'index.html',
+                image_data_url=image_data_url,
+                predicted_digit=prediction,
+                error=None
+            )
+
+        except Exception as e:
+            return render_template('index.html', error=f"Gagal memproses gambar atau melakukan prediksi: {e}")
+
+    return render_template('index.html', error="Terjadi kesalahan yang tidak diketahui")
 
 if __name__ == '__main__':
-    app.run(debug=True)
-    
+    # Jalankan aplikasi Flask
+    # Di lingkungan produksi, gunakan server WSGI seperti Gunicorn atau uWSGI
+    app.run(debug=True) # debug=True hanya untuk pengembangan
