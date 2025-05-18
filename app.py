@@ -27,7 +27,7 @@ class CNN(nn.Module):
     x = F.dropout(x, training=self.training)
     x = self.fc2(x)
 
-    return F.softmax(x)
+    return F.softmax(x, dim=1)
 
 app = Flask(__name__)
 
@@ -76,6 +76,7 @@ def predict():
             with tc.no_grad():
                 output = model(img_tensor)
             prediction = output.argmax(dim=1, keepdim=True).item()
+            probabilities = output.squeeze().tolist()
 
             # Konversi gambar asli ke base64 untuk ditampilkan
             buffered = io.BytesIO()
@@ -87,6 +88,7 @@ def predict():
                 'index.html',
                 image_data_url=image_data_url,
                 predicted_digit=prediction,
+                probabilities=probabilities,
                 error=None
             )
 

@@ -49,6 +49,17 @@
                     <div class="prediction-result" style="text-align: center; padding: 10px;">
                         <h2>Prediksi:</h2>
                         <p style="font-size: 4em; font-weight: bold; margin: 10px 0; color: #007bff;">{{ predicted_digit }}</p>
+
+                        {% if probabilities %}
+                            <div class="probabilities" style="margin-top: 20px; text-align: left; max-width: 300px; margin-left:auto; margin-right:auto;">
+                                <h4 style="margin-bottom: 5px;">Probabilitas Kelas:</h4>
+                                <ul style="list-style-type: none; padding: 0;">
+                                    {% for prob in probabilities %}
+                                        <li style="margin-bottom: 3px;">Digit {{ loop.index0 }}: {{ "%.4f"|format(prob) }} ({{ "%.2f"|format(prob*100) }}%)</li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                        {% endif %}
                     </div>
                 {% endif %}
             </div>
